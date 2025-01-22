@@ -2,15 +2,15 @@
 # -*- coding: utf-8 -*-
 
 __author__ = 'Markus Thilo'
-__version__ = '0.0.4_2025-01-17'
+__version__ = '0.0.4_2025-01-22'
 __license__ = 'GPL-3'
 __email__ = 'markus.thilo@gmail.com'
 __status__ = 'Testing'
 __description__ = 'Copy to import folder and generate trigger file'
 __distribution__ = 'THI'	# for testrunns
-__destination__ = 'C:\\Users\\THI\\Documents\\test\\'	# path for testrunns
-__logging__ = 'C:\\Users\\THI\\Documents\\test\\log\\'	# path for testrunns
-__update__ = 'C:\\Users\\THI\\Documents\\test\\dist\\'	# path for testrunns
+__destination__ = 'F:/'	# path for testruns
+__logging__ = 'F:/logs/'	# path for testruns
+__update__ = 'F:/dist/'	# path for testrunns
 
 ### standard libs ###
 import logging
@@ -134,6 +134,7 @@ class ZipAndHash(Thread):
 		self._files2hash = files2hash
 		self._echo = echo
 		self._parallel = int(cpu_count() / 2)
+		
 
 	def run(self):
 		'''This is the worker'''
@@ -147,18 +148,19 @@ class ZipAndHash(Thread):
 		logging.info(msg)
 		self._echo(msg)
 		with Pool(processes=max(1, self._parallel)) as pool:
-			self.hashes = dict(pool.map(self._sum, self._files2hash))
+			self.file_hashes = dict(pool.map(self._sum, (self._src.parent / path for path in self._files2hash)))
 		with Pool(processes=max(1, self._parallel)) as pool:
-			self._zip_hashes = dict(pool.map(self._sum, self._zips))
-		for path, hash in self._zip_hashes.items():
-			self.hashes[path.relative_to(self._dst.parent)] = hash
+			self.zip_hashes = dict(pool.map(self._sum, (self._dst.parent / path for path in self._zips)))
 		msg = 'Berechnen der Hash-Werte wurde beendet'
 		logging.info(msg)
 		self._echo(msg)
 
 	def get_hashes(self):
-		'''Return dict with paths and hashes'''
-		return self.hashes
+		'''Return relative paths and hashes'''
+		for path, md5 in self.file_hashes.items():
+			yield path.relative_to(self._src.parent), md5
+		for path, md5 in self.zip_hashes.items():
+			yield path.relative_to(self._dst.parent), md5
 
 class Copy:
 	'''Copy functionality'''
@@ -253,7 +255,7 @@ class Copy:
 		files = dict()
 		for path in tree.relative_files():	# analyze root structure
 			depth = len(list(path.parents)) - 1
-			size = path.stat().st_size
+			size = root_path.parent.joinpath(path).stat().st_size
 			files[path] = {'depth': depth, 'size': size}
 			for parent in path.parents[:-1]:
 				dirs[parent]['size'] += size
@@ -280,7 +282,8 @@ class Copy:
 			zip_index = len(parents) - self.ZIP_DEPTH - 2
 			if zip_index < 0 or parents[zip_index] not in dir_paths2zip:
 				file_paths2hash.append(path)
-		msg = f'Starte das Kopieren von {root_path} nach {dst_path}, insgesamt {self._bytes(next(iter(dirs.values()))['size'])}'
+		total_size = next(iter(dirs.values()))['size']
+		msg = f'Starte das Kopieren von {root_path} nach {dst_path}, insgesamt {self._bytes(total_size)}'
 		logging.info(msg)
 		echo(msg)
 		for rel_path in dir_paths2make:	# make dirs at destination
@@ -310,31 +313,31 @@ class Copy:
 			self._returncode(robocopy.wait())
 		if zh_thread.is_alive():
 			index = 0
-			echo('Berechne Hash-Werte')
+			echo('Robocopy.exe ist fertig, komprimiere und/oder berechne Hash-Werte')
 			while zh_thread.is_alive():
-				echo(f'{"-/|\\"[index]}  ', end='\r')
+				echo(f'{"|/-\\"[index]}  ', end='\r')
 				index += 1
 				if index > 3:
 					index = 0
 				sleep(.25)
 		zh_thread.join()
-		tsv = 'Pfad\tMD5-Hash'
-		for path, hash in zh_thread.get_hashes().items():
-			tsv += f'\n{path}\t{hash}'
-		dst_tsv_path = dst_path / self.TSV_NAME
 		if not self.errors:
+			tsv = 'Pfad\tMD5-Hash'
+			for path, md5 in zh_thread.get_hashes():
+				tsv += f'\n{path}\t{md5}'
+			dst_tsv_path = dst_path / self.TSV_NAME
 			try:
 				dst_tsv_path.write_text(tsv, encoding='utf-8')
 			except Exception as ex:
 				msg = f'Konnte {dst_tsv_path} nicht erzeugen:\n{ex}'
 				logging.error(msg)
-		log_tsv_path = log_path / f'{strftime('%y%m%d-%H%M')}-{self.TSV_NAME}'
-		try:
-			log_tsv_path.write_text(tsv, encoding='utf-8')
-		except Exception as ex:
-			msg = f'Konnte Log-Datei {log_tsv_path} nicht erzeugen:\n{ex}'
-			logging.error(msg)
-			self.errors += 1
+			log_tsv_path = log_path / f'{strftime('%y%m%d-%H%M')}-{self.TSV_NAME}'
+			try:
+				log_tsv_path.write_text(tsv, encoding='utf-8')
+			except Exception as ex:
+				msg = f'Konnte Log-Datei {log_tsv_path} nicht erzeugen:\n{ex}'
+				logging.error(msg)
+				self.errors += 1
 		end_time = perf_counter()
 		delta = end_time - start_time
 		msg = f'Fertig. Das Kopieren dauerte {timedelta(seconds=delta)} (Stunden, Minuten, Sekunden).'
@@ -342,7 +345,7 @@ class Copy:
 		echo(msg)
 		logging.shutdown()
 
-	def _bytes(size, format_k='{iec} / {si}', format_b='{b} byte(s)'):
+	def _bytes(self, size, format_k='{iec} / {si}', format_b='{b} byte(s)'):
 		'''Genereate readable size string,
 			format_k: "{iec} / {si} / {b} bytes" gives e.g. 9.54 MiB / 10.0 MB / 10000000 bytes
 			format_b will be returned if size < 5 bytes
