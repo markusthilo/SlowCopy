@@ -2,19 +2,17 @@
 # -*- coding: utf-8 -*-
 
 __author__ = 'Markus Thilo'
-__version__ = '0.0.4_2025-01-22'
+__version__ = '0.5.0_2025-0205'
 __license__ = 'GPL-3'
 __email__ = 'markus.thilo@gmail.com'
 __status__ = 'Testing'
 __description__ = 'Use PyInstaller to build SlowCopy executables'
 
-COPYTARGET_BASEPATH = 'C:/Users/THI/Desktop/test_dst'	### path for testruns
-UPDATE_PATH = 'C:/Users/THI/Desktop/dist'	### path for testruns
+COPYTARGET_BASEPATH = 'C:/Import'	### path for testruns
+UPDATE_PATH = 'C:/Import/dist'	### path for testruns
 
 BUILDS = (
-	# Tool-Nutzer,	Zielpfad im Import-Ordner,			Zielpfad für Log-Datei
-
-	('THI',			'C:/Users/THI/Desktop/test_dst',	'C:/Users/User/Desktop/test_log'),
+	('Test THI', 'C:/Import', 'C:/Import/_logs')	### path for testruns
 )
 
 from pathlib import Path
