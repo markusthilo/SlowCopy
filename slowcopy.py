@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 __author__ = 'Markus Thilo'
-__version__ = '0.5.0_2025-02-05'
+__version__ = '0.5.1_2025-02-05'
 __license__ = 'GPL-3'
 __email__ = 'markus.thilo@gmail.com'
 __status__ = 'Testing'
@@ -225,38 +225,43 @@ class Copy:
 		tree = RoboWalk(root_path)	# get source file/dir structure
 		dirs = {path: {'depth': len(list(path.parents)) - 1, 'size': 0, 'files': 0} for path in tree.relative_dirs()}
 		files = dict()
-		for path in tree.relative_files():	# analyze root structure
-			depth = len(list(path.parents)) - 1
-			size = root_path.parent.joinpath(path).stat().st_size
-			files[path] = {'depth': depth, 'size': size}
-			for parent in path.parents[:-1]:
-				dirs[parent]['size'] += size
-				dirs[parent]['files'] += 1
-		dir_paths2zip = [	# look for dirs with to much files for normal copy
-			path for path, infos in dirs.items()
-			if infos['depth'] == self.ZIP_DEPTH	# logic to choose what to zip
-				and infos['files'] >= self.ZIP_FILE_QUANTITY
-				and not 'PortableCase' in f'{path}'	# do not zip axiom portable cases
-		]
-		dir_paths2robocopy = [	# dirs that will copied entirely by robocopy
-			path for path, infos in dirs.items()
-			if infos['depth'] == self.ZIP_DEPTH and not path in dir_paths2zip
-		]
-		dir_paths2make = [	# dirs that have to be created
-			path for path, infos in dirs.items() if infos['depth'] < self.ZIP_DEPTH
-		]
-		files2robocopy = dict()	# files that will copied by robocopy
-		for this_dir in dir_paths2make:
-			files_in_dir = [path.name for path in files if path.parent == this_dir]
-			if files_in_dir:
-				files2robocopy[this_dir] = files_in_dir
-		file_paths2hash = list()	# all files that will not be zipped
-		for path in files:
-			parents = list(path.parents)
-			zip_index = len(parents) - self.ZIP_DEPTH - 2
-			if zip_index < 0 or parents[zip_index] not in dir_paths2zip:
-				file_paths2hash.append(path)
-		total_size = next(iter(dirs.values()))['size']
+		try:
+			for path in tree.relative_files():	# analyze root structure
+				depth = len(list(path.parents)) - 1
+				size = root_path.parent.joinpath(path).stat().st_size
+				files[path] = {'depth': depth, 'size': size}
+				for parent in path.parents[:-1]:
+					dirs[parent]['size'] += size
+					dirs[parent]['files'] += 1
+			dir_paths2zip = [	# look for dirs with to much files for normal copy
+				path for path, infos in dirs.items()
+				if infos['depth'] == self.ZIP_DEPTH	# logic to choose what to zip
+					and infos['files'] >= self.ZIP_FILE_QUANTITY
+					and not 'PortableCase' in f'{path}'	# do not zip axiom portable cases
+			]
+			dir_paths2robocopy = [	# dirs that will copied entirely by robocopy
+				path for path, infos in dirs.items()
+				if infos['depth'] == self.ZIP_DEPTH and not path in dir_paths2zip
+			]
+			dir_paths2make = [	# dirs that have to be created
+				path for path, infos in dirs.items() if infos['depth'] < self.ZIP_DEPTH
+			]
+			files2robocopy = dict()	# files that will copied by robocopy
+			for this_dir in dir_paths2make:
+				files_in_dir = [path.name for path in files if path.parent == this_dir]
+				if files_in_dir:
+					files2robocopy[this_dir] = files_in_dir
+			file_paths2hash = list()	# all files that will not be zipped
+			for path in files:
+				parents = list(path.parents)
+				zip_index = len(parents) - self.ZIP_DEPTH - 2
+				if zip_index < 0 or parents[zip_index] not in dir_paths2zip:
+					file_paths2hash.append(path)
+			total_size = next(iter(dirs.values()))['size']
+		except Exception as ex:
+			logging.error(ex)
+			echo(f'ERROR: {ex}')
+			raise RuntimeError(ex)
 		msg = f'Starte das Kopieren von {root_path} nach {dst_path}, insgesamt {self._bytes(total_size)}'
 		logging.info(msg)
 		echo(msg)
