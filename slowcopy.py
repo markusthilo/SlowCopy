@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 __author__ = 'Markus Thilo'
-__version__ = '0.5.1_2025-02-05'
+__version__ = '0.5.1_2025-02-06'
 __license__ = 'GPL-3'
 __email__ = 'markus.thilo@gmail.com'
 __status__ = 'Testing'
@@ -222,10 +222,10 @@ class Copy:
 		msg = f'Das Kopieren von {root_path} nach {dst_path} wird vorbereitet'
 		logging.info(msg)
 		echo(msg)
-		tree = RoboWalk(root_path)	# get source file/dir structure
-		dirs = {path: {'depth': len(list(path.parents)) - 1, 'size': 0, 'files': 0} for path in tree.relative_dirs()}
-		files = dict()
 		try:
+			tree = RoboWalk(root_path)	# get source file/dir structure
+			dirs = {path: {'depth': len(list(path.parents)) - 1, 'size': 0, 'files': 0} for path in tree.relative_dirs()}
+			files = dict()
 			for path in tree.relative_files():	# analyze root structure
 				depth = len(list(path.parents)) - 1
 				size = root_path.parent.joinpath(path).stat().st_size
