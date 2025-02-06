@@ -10,7 +10,7 @@ There is a check for updates on startup.
 
 The tool can be also be run on PowerShel/CMD. Try
 
-`slowcopy.exe -h xxx-vx.x.x.exe -h`
+`slowcopy-xxx-vx.x.x.exe -h`
 
 to learn usage.
 
