@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 __author__ = 'Markus Thilo'
-__version__ = '0.5.1_2025-02-06'
+__version__ = '0.6.0_2025-02-10'
 __license__ = 'GPL-3'
 __email__ = 'markus.thilo@gmail.com'
 __status__ = 'Testing'
@@ -153,6 +153,7 @@ class Copy:
 	)
 	ZIP_DEPTH = 2						# path depth where subdirs will be zipped
 	ZIP_FILE_QUANTITY = 500				# minimal quantity of files in subdir to zip
+	PREVENT_ZIP = r'PortableCase'		# do not zip if path contains this
 	TOPDIR_REG = r'^[0-9]{6}-([0-9]{4}|[0-9]{6})-[iSZ0-9][0-9]{5}$'	# how the top dir has to look
 
 	@staticmethod
@@ -237,7 +238,7 @@ class Copy:
 				path for path, infos in dirs.items()
 				if infos['depth'] == self.ZIP_DEPTH	# logic to choose what to zip
 					and infos['files'] >= self.ZIP_FILE_QUANTITY
-					and not 'PortableCase' in f'{path}'	# do not zip axiom portable cases
+					and not search(self.PREVENT_ZIP, f'{path}')
 			]
 			dir_paths2robocopy = [	# dirs that will copied entirely by robocopy
 				path for path, infos in dirs.items()
@@ -255,7 +256,7 @@ class Copy:
 			for path in files:
 				parents = list(path.parents)
 				zip_index = len(parents) - self.ZIP_DEPTH - 2
-				if zip_index < 0 or parents[zip_index] not in dir_paths2zip:
+				if parents[zip_index] not in dir_paths2zip:
 					file_paths2hash.append(path)
 			total_size = next(iter(dirs.values()))['size']
 		except Exception as ex:
@@ -291,9 +292,14 @@ class Copy:
 						echo(f'ERROR: {msg}')
 						raise RuntimeError(ex)
 			echo('100%')
-		hash_thread = HashThread(root_path, dst_path, dir_paths2zip, file_paths2hash)
-		echo(f'Starte Berechnung von {len(dir_paths2zip) + len(file_paths2hash)} MD5-Hashes')
-		hash_thread.start()
+		try:
+			hash_thread = HashThread(root_path, dst_path, dir_paths2zip, file_paths2hash)
+			echo(f'Starte Berechnung von {len(dir_paths2zip) + len(file_paths2hash)} MD5-Hashes')
+			hash_thread.start()
+		except Exception as ex:
+			msg = f'Konnte Thread, der Hash-Werte bilden soll, nicht starten:\n{ex}'
+			logging.error(msg)
+			echo(f'ERROR: {msg}')
 		for path, file_names in files2robocopy.items():
 			src_path = root_path.parent / path
 			cp_path = self.DST_PATH / path
@@ -304,14 +310,33 @@ class Copy:
 			cp_path = self.DST_PATH / path
 			echo(f'Kopiere {src_path}) nach {cp_path}')
 			self._run_robocopy(RoboCopyDir(src_path, cp_path))
-		msg = 'Robocopy.exe ist fertig'
+		msg = 'Robocopy.exe ist fertig, starte Überprüfung anhand Dateigröße'
 		logging.info(msg)
 		echo(msg)
+		errors = 0
+		mismatches = 0
+		total = len(file_paths2hash)
+		for cnt, path in enumerate(file_paths2hash, start=1):
+			echo(f'{int(100*cnt/total)}%', end='\r')
+			abs_path = self.DST_PATH / path
+			try:
+				size = abs_path.stat().st_size
+			except Exception as ex:
+				msg = f'Dateigröße von {abs_path} konnte nicht ermittelt werden:\n{ex}'
+				logging.warning(msg)
+				echo(f'WARNING: {msg}')
+				errors += 1
+			else:
+				if size != files[path]['size']:
+					msg = f'Dateigrößenabweichung: {root_path.parent / path} => {self._bytes(files[path]['size'])}, {dst_path} => {self._bytes(size)}'
+					logging.warning(msg)
+					echo(f'WARNING: {msg}')
+					mismatches += 1
 		if hash_thread.is_alive():
-			index = 0
-			msg = 'Führe das Hash-Wert-Berechnung fort'
+			msg = 'Führe die Hash-Wert-Berechnung fort'
 			logging.info(msg)
 			echo(msg)
+			index = 0
 			while hash_thread.is_alive():
 				echo(f'{"|/-\\"[index]}  ', end='\r')
 				index += 1
@@ -323,19 +348,30 @@ class Copy:
 		tsv = 'Pfad\tMD5-Hash'
 		for path, md5 in hash_thread.get_hashes():
 			tsv += f'\n{path}\t{md5}'
-		dst_tsv_path = dst_path / self.TSV_NAME
-		try:
-			dst_tsv_path.write_text(tsv, encoding='utf-8')
-		except Exception as ex:
-			msg = f'Konnte {dst_tsv_path} nicht erzeugen:\n{ex}'
-			logging.error(msg)
-			echo(f'ERROR: {msg}')
-			raise OSError(ex)
 		log_tsv_path = log_path / f'{strftime('%y%m%d-%H%M')}-{self.TSV_NAME}'
 		try:
 			log_tsv_path.write_text(tsv, encoding='utf-8')
 		except Exception as ex:
 			msg = f'Konnte Log-Datei {log_tsv_path} nicht erzeugen:\n{ex}'
+			logging.error(msg)
+			echo(f'ERROR: {msg}')
+			raise OSError(ex)
+		if errors:
+			msg = f'Die Grö0e von {errors} Datei(en) konnte nicht ermittelt werden'
+			logging.error(msg)
+			echo(f'ERROR: {msg}')
+			if not mismatches:
+				raise OSError(msg)
+		if mismatches:
+			msg = f'Bei {mismatches} Datei(en) stimmt die Größe der Zieldatei nicht mit der Ausgangsdatei überein'
+			logging.error(msg)
+			echo(f'ERROR: {msg}')
+			raise RuntimeError(msg)
+		dst_tsv_path = dst_path / self.TSV_NAME
+		try:
+			dst_tsv_path.write_text(tsv, encoding='utf-8')
+		except Exception as ex:
+			msg = f'Konnte {dst_tsv_path} nicht erzeugen:\n{ex}'
 			logging.error(msg)
 			echo(f'ERROR: {msg}')
 			raise OSError(ex)
@@ -398,7 +434,7 @@ class Worker(Thread):
 		'''Get all attributes from GUI and run Copy'''
 		super().__init__()
 		self.gui = gui
-		self.errors = 0
+		self.errors = False
 
 	def run(self):
 		'''Run thread'''
@@ -406,7 +442,7 @@ class Worker(Thread):
 			try:
 				copy = Copy(source_path, echo=self.gui.echo)
 			except:
-				self.errors += 1
+				self.errors = True
 		self.gui.finished(self.errors)
 
 class Gui(Tk):
@@ -587,7 +623,7 @@ class Gui(Tk):
 			self._warning_state = 'enable'
 			showerror(
 				title = 'Achtung',
-				message= f'Es wurde(n) {errors} Fehler gemeldet'
+				message= 'Es traten Fehler auf'
 			)
 		else:
 			self.info_text.configure(foreground=self.GREEN_FG, background=self.GREEN_BG)
