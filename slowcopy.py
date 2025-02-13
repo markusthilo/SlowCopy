@@ -2,15 +2,15 @@
 # -*- coding: utf-8 -*-
 
 __author__ = 'Markus Thilo'
-__version__ = '0.6.0_2025-02-10'
+__version__ = '0.6.1_2025-02-13'
 __license__ = 'GPL-3'
 __email__ = 'markus.thilo@gmail.com'
 __status__ = 'Testing'
 __description__ = 'Copy to import folder and generate trigger file'
 __distribution__ = 'Test_THI'	# for testrunns
-__destination__ = 'C:/Import'	# path for testruns
-__logging__ = 'C:/Import/_logs'	# path for testruns
-__update__ = 'C:/Import/dist'	# path for testrunns
+__destination__ = 'P:/test_import/'	# path for testruns
+__logging__ = 'P:/test_logs/'	# path for testruns
+__update__ = 'P:/SlowCopy/dist/'	# path for testrunns
 
 ### standard libs ###
 import logging
@@ -75,32 +75,6 @@ class RoboCopyFiles(RoboCopy):
 	def __init__(self, src, dst, file_paths):
 		'''Create robocopy process'''
 		super().__init__(src, dst, '/compress', '/mt', '/nc', files=file_paths)
-
-class RoboWalk(RoboCopy):
-	'''Use robocopy to get files and dirs'''
-
-	def __init__(self, root):
-		'''Use robocopy to get tree'''
-		self.root = root.resolve()
-		super().__init__(self.root, 'NULL', '/e', '/l')
-		self.files = list()
-		self.dirs = list()
-		for line in self.stdout:
-			if line := line.strip():
-				if line.endswith('\\'):
-					self.dirs.append(Path(line))
-				else:
-					self.files.append(Path(line))
-
-	def relative_files(self):
-		'''Relative file paths'''
-		for path in self.files:
-			yield path.relative_to(self.root.parent)
-
-	def relative_dirs(self):
-		'''Relative dir paths'''
-		for path in self.dirs:
-			yield path.relative_to(self.root.parent)
 
 class HashThread(Thread):
 	'''Calculate hashes'''
@@ -183,17 +157,18 @@ class Copy:
 			return f'{root_path} hat nicht das korrekte Namensformat (POLIKS-Vorgansnummer)'
 		if (Copy.DST_PATH / root_path.name / Copy.TSV_NAME).is_file():
 			return f'{root_path} befindet sich bereits im Ziel- bzw. Importverzeichnis'
-		tree = RoboWalk(root_path)
-		for path in tree.dirs + tree.files:
+		for path in root_path.rglob('*'):
+			if path.is_dir() and path.name in Copy.BLACKLIST:
+				return f'Ein Verzeichnis {path} darf sich nicht im Quellverzeichnis befinden.'
 			if len(f'{path.absolute()}') > Copy.MAX_PATH_LEN:
 				return f'Der Pfad {path.absolute()} hat mehr als {Copy.MAX_PATH_LEN} Zeichen'
-		for path in tree.files:
-			if path.name in Copy.BLACKLIST:
+			if path.is_file() and path.name in Copy.BLACKLIST:
 				return f'Eine Datei {path} darf sich nicht im Quellverzeichnis befinden.'
 
 	def __init__(self, root_path, echo=print):
 		'''Generate object to copy and to zip'''
 		self.echo = echo
+		self.root_path = root_path.resolve()
 		start_time = perf_counter()
 		if ex := self.bad_source(root_path):
 			echo(f'ERROR: {ex}')
@@ -224,16 +199,22 @@ class Copy:
 		logging.info(msg)
 		echo(msg)
 		try:
-			tree = RoboWalk(root_path)	# get source file/dir structure
-			dirs = {path: {'depth': len(list(path.parents)) - 1, 'size': 0, 'files': 0} for path in tree.relative_dirs()}
+			dirs = {Path(self.root_path.name): {'depth': 0, 'size': 0, 'files': 0}}
+			for path in self.root_path.rglob('*'):
+				if path.is_dir():
+					rel_path = path.relative_to(self.root_path.parent)
+					dirs[rel_path] = {'depth': len(list(rel_path.parents)) - 1, 'size': 0, 'files': 0}
 			files = dict()
-			for path in tree.relative_files():	# analyze root structure
-				depth = len(list(path.parents)) - 1
-				size = root_path.parent.joinpath(path).stat().st_size
-				files[path] = {'depth': depth, 'size': size}
-				for parent in path.parents[:-1]:
-					dirs[parent]['size'] += size
-					dirs[parent]['files'] += 1
+			for path in self.root_path.rglob('*'):	# analyze root structure
+				if path.is_file():
+					rel_path = path.relative_to(self.root_path.parent)
+					depth = len(list(rel_path.parents)) - 1
+					size = path.stat().st_size
+					files[rel_path] = {'depth': depth, 'size': size}
+					for parent in rel_path.parents[:-1]:
+						print(parent)
+						dirs[parent]['size'] += size
+						dirs[parent]['files'] += 1
 			dir_paths2zip = [	# look for dirs with to much files for normal copy
 				path for path, infos in dirs.items()
 				if infos['depth'] == self.ZIP_DEPTH	# logic to choose what to zip
