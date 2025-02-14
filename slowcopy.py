@@ -212,7 +212,6 @@ class Copy:
 					size = path.stat().st_size
 					files[rel_path] = {'depth': depth, 'size': size}
 					for parent in rel_path.parents[:-1]:
-						print(parent)
 						dirs[parent]['size'] += size
 						dirs[parent]['files'] += 1
 			dir_paths2zip = [	# look for dirs with to much files for normal copy
