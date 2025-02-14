@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 __author__ = 'Markus Thilo'
-__version__ = '0.6.1_2025-02-13'
+__version__ = '0.6.2_2025-02-14'
 __license__ = 'GPL-3'
 __email__ = 'markus.thilo@gmail.com'
 __status__ = 'Testing'
@@ -127,7 +127,7 @@ class Copy:
 	)
 	ZIP_DEPTH = 2						# path depth where subdirs will be zipped
 	ZIP_FILE_QUANTITY = 500				# minimal quantity of files in subdir to zip
-	PREVENT_ZIP = r'PortableCase'		# do not zip if path contains this
+	PREVENT_ZIP = 'OpenCase.exe'		# do not zip if dir contains this file
 	TOPDIR_REG = r'^[0-9]{6}-([0-9]{4}|[0-9]{6})-[iSZ0-9][0-9]{5}$'	# how the top dir has to look
 
 	@staticmethod
@@ -149,10 +149,18 @@ class Copy:
 		dir_path.joinpath(filename).write_bytes(Copy.UPDATE_PATH.joinpath(filename).read_bytes())
 
 	@staticmethod
+	def bad_destination():
+		'''Check if target directory is reachable'''
+		try:
+			Copy.DST_PATH.iterdir()
+		except FileNotFoundError:
+			return (f'Zielverzeichnis {Copy.DST_PATH} ist nicht erreichbar')
+
+	@staticmethod
 	def bad_source(root_path):
 		'''Check if source directory is ok'''
 		if not root_path.is_dir():
-			return f'{root_path} ist ein kein Verzeichnis'
+			return f'{root_path} ist kein Verzeichnis oder nicht erreichbar'
 		if not search(Copy.TOPDIR_REG, root_path.name):
 			return f'{root_path} hat nicht das korrekte Namensformat (POLIKS-Vorgansnummer)'
 		if (Copy.DST_PATH / root_path.name / Copy.TSV_NAME).is_file():
@@ -218,7 +226,7 @@ class Copy:
 				path for path, infos in dirs.items()
 				if infos['depth'] == self.ZIP_DEPTH	# logic to choose what to zip
 					and infos['files'] >= self.ZIP_FILE_QUANTITY
-					and not search(self.PREVENT_ZIP, f'{path}')
+					and not path.joinpath(self.PREVENT_ZIP).is_file()
 			]
 			dir_paths2robocopy = [	# dirs that will copied entirely by robocopy
 				path for path, infos in dirs.items()
@@ -508,6 +516,10 @@ class Gui(Tk):
 					)
 				self.destroy()
 		else:
+			error = Copy.bad_destination()
+			if error:
+				showerror(title='Fehler', message=error)
+				self.destroy()
 			self._init_warning()
 			self._add_dir(dir_path)
 

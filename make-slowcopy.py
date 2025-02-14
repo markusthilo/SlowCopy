@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 __author__ = 'Markus Thilo'
-__version__ = '0.6.0_2025-02-10'
+__version__ = '0.6.2_2025-02-14'
 __license__ = 'GPL-3'
 __email__ = 'markus.thilo@gmail.com'
 __status__ = 'Testing'
@@ -21,6 +21,7 @@ import PyInstaller.__main__
 
 if __name__ == '__main__':	# start here
 	cwd_path = Path.cwd()
+	dist_path = cwd_path / 'dist'
 	icon_path = cwd_path / 'appicon.ico'
 	build_path = cwd_path / 'build'
 	build_path.mkdir(exist_ok=True)
@@ -52,5 +53,5 @@ if __name__ == '__main__':	# start here
 		])
 		cwd_path.joinpath(f'{slowcopy_name}.spec').unlink(missing_ok=True)
 	rmtree(build_path)
-	cwd_path.joinpath('dist', 'version.txt').write_text(slowcopy_version, encoding='utf-8')
-	print(f"\nAll done, check {cwd_path/'dist'} for new build executables.\n")
+	dist_path.joinpath('version.txt').write_text(slowcopy_version, encoding='utf-8')
+	print(f'\nAll done, check {dist_path} for new build executables.\n')
