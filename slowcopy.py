@@ -2,20 +2,25 @@
 # -*- coding: utf-8 -*-
 
 __author__ = 'Markus Thilo'
-__version__ = '0.6.2_2025-02-14'
+__version__ = '0.7.0_2025-02-18'
 __license__ = 'GPL-3'
 __email__ = 'markus.thilo@gmail.com'
 __status__ = 'Testing'
 __description__ = 'Copy to import folder and generate trigger file'
 __distribution__ = 'Test_THI'	# for testrunns
+
+#__destination__ = '//192.168.128.150/UrkSp/Import/LKA71/SlowCopy_Test_THI'	# path for testruns
 __destination__ = 'P:/test_import/'	# path for testruns
+#__logging__ = '//192.168.128.150/UrkSp/Import/LKA71/SlowCopy_Test_THI/_logs'	# path for testruns
 __logging__ = 'P:/test_logs/'	# path for testruns
-__update__ = 'P:/SlowCopy/dist/'	# path for testrunns
+#__update__ = '//192.168.128.150/UrkSp/Import/_dist'	# look for updates
+__update__ = 'P:/SlowCopy/dist/'	# path for testruns
 
 ### standard libs ###
 import logging
 from sys import executable as __executable__
 from pathlib import Path
+from shutil import rmtree
 from argparse import ArgumentParser
 from re import search, sub
 from subprocess import Popen, PIPE, STDOUT, STARTUPINFO, STARTF_USESHOWWINDOW
@@ -37,17 +42,11 @@ from idlelib.tooltip import Hovertip
 class RoboCopy(Popen):
 	'''Use Popen to run tools on Windows'''
 
-	def __init__(self, src, dst, *args, files=()):
+	def __init__(self, src, dst):
 		'''Create robocopy process'''
-		cmd = ['Robocopy.exe', src, dst]
-		if files:
-			cmd.extend(files)
-		if args:
-			cmd.extend(args)
-		cmd.extend(['/fp', '/ns', '/njh', '/njs', '/nc', '/unicode'])
 		self.startupinfo = STARTUPINFO()
 		self.startupinfo.dwFlags |= STARTF_USESHOWWINDOW
-		super().__init__(cmd,
+		super().__init__(['Robocopy.exe', src, dst, '/e', '/compress', '/fp', '/ns', '/njh', '/njs', '/nc', '/unicode'],
 			stdout = PIPE,
 			stderr = STDOUT,
 			encoding = 'utf-8',
@@ -62,20 +61,6 @@ class RoboCopy(Popen):
 			if stripped := line.strip():
 				yield stripped
 
-class RoboCopyDir(RoboCopy):
-	'''Run robocopy to copy dir tree'''
-
-	def __init__(self, src, dst):
-		'''Create robocopy process'''
-		super().__init__(src, dst, '/e', '/compress', '/mt')
-
-class RoboCopyFiles(RoboCopy):
-	'''Run robocopy to copy files'''
-
-	def __init__(self, src, dst, file_paths):
-		'''Create robocopy process'''
-		super().__init__(src, dst, '/compress', '/mt', '/nc', files=file_paths)
-
 class HashThread(Thread):
 	'''Calculate hashes'''
 
@@ -85,24 +70,20 @@ class HashThread(Thread):
 		with path.open('rb') as fh:
 			return file_digest(fh, 'md5').hexdigest()
 
-	def __init__(self, root_path, dst_path, zip_paths, file_paths):
-		'''Generate object to zip and calculate hashes'''
+	def __init__(self, file_paths):
+		'''Generate object to calculate hashes'''
 		super().__init__()
-		self.root_path = root_path
-		self.dst_path = dst_path
-		self.zip_paths = zip_paths
 		self.file_paths = file_paths
 
 	def run(self):
 		'''Calculate hashes'''
-		logging.info(f'Starte Berechnung von {len(self.zip_paths) + len(self.file_paths)} Hash-Werten')
-		self.hashes = [(path.with_suffix('.zip'), self.md5(self.dst_path.parent / path.with_suffix('.zip'))) for path in self.zip_paths]
-		self.hashes.extend([(path, self.md5(self.root_path.parent / path)) for path in self.file_paths])
+		logging.info(f'Starte Berechnung von {len(self.file_paths)} Hash-Werten')
+		self.hashes = [self.md5(path) for path in self.file_paths]
 		logging.info('Hash-Wert-Berechnung ist abgeschlossen')
 
 	def get_hashes(self):
 		'''Return relative paths and hashes'''
-		for path, md5 in self.hashes:
+		for path, md5 in zip(self.file_paths, self.hashes):
 			yield path, md5
 
 class Copy:
@@ -118,16 +99,16 @@ class Copy:
 	UPDATE_PATH = Path(__update__)		# directory where updates can be found
 	UPDATE_NAME = 'version.txt'			# trigger filename for updates (textfile with version number)
 	MAX_PATH_LEN = 230					# throw error when paths have more chars
-	BLACKLIST = (						# prohibited at path depth 1
+	BLACKLIST_FILES = (				# prohibited at path depth 1
 		'fertig.txt',
 		'verarbeitet.txt',
 		'fehler.txt',
 		'start.txt',
 		'zu_loeschen.txt'
 	)
-	ZIP_DEPTH = 2						# path depth where subdirs will be zipped
-	ZIP_FILE_QUANTITY = 500				# minimal quantity of files in subdir to zip
-	PREVENT_ZIP = 'OpenCase.exe'		# do not zip if dir contains this file
+	BLACKLIST_PATHS = {					# forbidden paths
+		'Help': ('HTML5', 'LicenseUpgrade')	# */Help/HTML5* && */Help/LicenseUpgrade*
+	}
 	TOPDIR_REG = r'^[0-9]{6}-([0-9]{4}|[0-9]{6})-[iSZ0-9][0-9]{5}$'	# how the top dir has to look
 
 	@staticmethod
@@ -157,220 +138,47 @@ class Copy:
 			return (f'Zielverzeichnis {Copy.DST_PATH} ist nicht erreichbar')
 
 	@staticmethod
+	def matches_all(dir_path, patterns):
+		'''Return True if all patterns are present under dir_path'''
+		for pattern in patterns:
+			if not dir_path.joinpath(pattern).exists():
+				return False
+		return True
+
+	@staticmethod
+	def bad_destination(root_path):
+		'''Check if destination is clean'''
+		if (Copy.DST_PATH / root_path.name / Copy.TSV_NAME).is_file():
+			return f'{root_path} befindet sich bereits im Ziel- bzw. Importverzeichnis'
+
+	@staticmethod
 	def bad_source(root_path):
 		'''Check if source directory is ok'''
 		if not root_path.is_dir():
 			return f'{root_path} ist kein Verzeichnis oder nicht erreichbar'
 		if not search(Copy.TOPDIR_REG, root_path.name):
 			return f'{root_path} hat nicht das korrekte Namensformat (POLIKS-Vorgansnummer)'
-		if (Copy.DST_PATH / root_path.name / Copy.TSV_NAME).is_file():
-			return f'{root_path} befindet sich bereits im Ziel- bzw. Importverzeichnis'
 		for path in root_path.rglob('*'):
-			if path.is_dir() and path.name in Copy.BLACKLIST:
-				return f'Ein Verzeichnis {path} darf sich nicht im Quellverzeichnis befinden.'
 			if len(f'{path.absolute()}') > Copy.MAX_PATH_LEN:
 				return f'Der Pfad {path.absolute()} hat mehr als {Copy.MAX_PATH_LEN} Zeichen'
-			if path.is_file() and path.name in Copy.BLACKLIST:
-				return f'Eine Datei {path} darf sich nicht im Quellverzeichnis befinden.'
 
-	def __init__(self, root_path, echo=print):
-		'''Generate object to copy and to zip'''
-		self.echo = echo
-		self.root_path = root_path.resolve()
-		start_time = perf_counter()
-		if ex := self.bad_source(root_path):
-			echo(f'ERROR: {ex}')
-			raise ValueError(ex)
-		dst_path = self.DST_PATH / root_path.name
-		try:
-			dst_path.mkdir(exist_ok=True)
-		except Exception as ex:
-			echo(f'ERROR: kann das Zielverzeichnis {dst_path} nicht erstellen:\n{ex}')
-			raise OSError(ex)
-		log_path = self.LOG_PATH / root_path.name
-		try:
-			log_path.mkdir(exist_ok=True)
-		except Exception as ex:
-			echo(f'ERROR: kann das Log-Verzeichnis {log_path} nicht erstellen:\n{ex}')
-			raise OSError(ex)
-		try:
-			logging.basicConfig(	# start logging
-				level = self.LOGLEVEL,
-				filename = log_path / f'{strftime('%y%m%d-%H%M')}-{self.LOG_NAME}',
-				format = '%(asctime)s %(levelname)s: %(message)s',
-				datefmt = '%Y-%m-%d %H:%M:%S'
-			)
-		except Exception as ex:
-			echo(f'ERROR: kann das Loggen nicht starten:\n{ex}')
-			raise RuntimeError(ex)
-		msg = f'Das Kopieren von {root_path} nach {dst_path} wird vorbereitet'
-		logging.info(msg)
-		echo(msg)
-		try:
-			dirs = {Path(self.root_path.name): {'depth': 0, 'size': 0, 'files': 0}}
-			for path in self.root_path.rglob('*'):
-				if path.is_dir():
-					rel_path = path.relative_to(self.root_path.parent)
-					dirs[rel_path] = {'depth': len(list(rel_path.parents)) - 1, 'size': 0, 'files': 0}
-			files = dict()
-			for path in self.root_path.rglob('*'):	# analyze root structure
-				if path.is_file():
-					rel_path = path.relative_to(self.root_path.parent)
-					depth = len(list(rel_path.parents)) - 1
-					size = path.stat().st_size
-					files[rel_path] = {'depth': depth, 'size': size}
-					for parent in rel_path.parents[:-1]:
-						dirs[parent]['size'] += size
-						dirs[parent]['files'] += 1
-			dir_paths2zip = [	# look for dirs with to much files for normal copy
-				path for path, infos in dirs.items()
-				if infos['depth'] == self.ZIP_DEPTH	# logic to choose what to zip
-					and infos['files'] >= self.ZIP_FILE_QUANTITY
-					and not path.joinpath(self.PREVENT_ZIP).is_file()
-			]
-			dir_paths2robocopy = [	# dirs that will copied entirely by robocopy
-				path for path, infos in dirs.items()
-				if infos['depth'] == self.ZIP_DEPTH and not path in dir_paths2zip
-			]
-			dir_paths2make = [	# dirs that have to be created
-				path for path, infos in dirs.items() if infos['depth'] < self.ZIP_DEPTH
-			]
-			files2robocopy = dict()	# files that will copied by robocopy
-			for this_dir in dir_paths2make:
-				files_in_dir = [path.name for path in files if path.parent == this_dir]
-				if files_in_dir:
-					files2robocopy[this_dir] = files_in_dir
-			file_paths2hash = list()	# all files that will not be zipped
-			for path in files:
-				parents = list(path.parents)
-				zip_index = len(parents) - self.ZIP_DEPTH - 2
-				if parents[zip_index] not in dir_paths2zip:
-					file_paths2hash.append(path)
-			total_size = next(iter(dirs.values()))['size']
-		except Exception as ex:
-			logging.error(ex)
-			echo(f'ERROR: {ex}')
-			raise RuntimeError(ex)
-		msg = f'Starte das Kopieren von {root_path} nach {dst_path}, insgesamt {self._bytes(total_size)}'
-		logging.info(msg)
-		echo(msg)
-		for rel_path in dir_paths2make:	# make dirs at destination
-			path = dst_path.parent / rel_path
-			try:
-				path.mkdir(parents=True, exist_ok=True)
-			except Exception as ex:
-				msg = f'Konnte Verzeichnis {path} nicht erzeugen:\n{ex}'
-				logging.error(msg)
-				echo(f'ERROR: {msg}')
-				raise OSError(ex)
-		for dir_path in dir_paths2zip:
-			src_path = root_path.parent / dir_path
-			zip_path = self.DST_PATH / dir_path.with_suffix('.zip')
-			files2zip = [path for path in src_path.rglob('*') if path.is_file()]
-			total = len(files2zip)
-			echo(f'Komprimiere {total} Datei(en) von {src_path} in Archivdatei {zip_path}')
-			with ZipFile(zip_path, 'w', ZIP_DEFLATED) as zf:
-				for cnt, path in enumerate(files2zip, start=1):
-					echo(f'{int(100*cnt/total)}%', end='\r')
-					try:
-						zf.write(path, path.relative_to(src_path))
-					except Exception as ex:
-						msg = f'Konnte {path} nicht zum Archiv {zip_path} hinzufügen:\n{ex}'
-						logging.error(msg)
-						echo(f'ERROR: {msg}')
-						raise RuntimeError(ex)
-			echo('100%')
-		try:
-			hash_thread = HashThread(root_path, dst_path, dir_paths2zip, file_paths2hash)
-			echo(f'Starte Berechnung von {len(dir_paths2zip) + len(file_paths2hash)} MD5-Hashes')
-			hash_thread.start()
-		except Exception as ex:
-			msg = f'Konnte Thread, der Hash-Werte bilden soll, nicht starten:\n{ex}'
-			logging.error(msg)
-			echo(f'ERROR: {msg}')
-		for path, file_names in files2robocopy.items():
-			src_path = root_path.parent / path
-			cp_path = self.DST_PATH / path
-			echo(f'Kopiere {len(file_names)} Datei(en) von {src_path} nach {cp_path}')
-			self._run_robocopy(RoboCopyFiles(src_path, cp_path, file_names))
-		for path in dir_paths2robocopy:
-			src_path = root_path.parent / path
-			cp_path = self.DST_PATH / path
-			echo(f'Kopiere {src_path}) nach {cp_path}')
-			self._run_robocopy(RoboCopyDir(src_path, cp_path))
-		msg = 'Robocopy.exe ist fertig, starte Überprüfung anhand Dateigröße'
-		logging.info(msg)
-		echo(msg)
-		errors = 0
-		mismatches = 0
-		total = len(file_paths2hash)
-		for cnt, path in enumerate(file_paths2hash, start=1):
-			echo(f'{int(100*cnt/total)}%', end='\r')
-			abs_path = self.DST_PATH / path
-			try:
-				size = abs_path.stat().st_size
-			except Exception as ex:
-				msg = f'Dateigröße von {abs_path} konnte nicht ermittelt werden:\n{ex}'
-				logging.warning(msg)
-				echo(f'WARNING: {msg}')
-				errors += 1
-			else:
-				if size != files[path]['size']:
-					msg = f'Dateigrößenabweichung: {root_path.parent / path} => {self._bytes(files[path]['size'])}, {dst_path} => {self._bytes(size)}'
-					logging.warning(msg)
-					echo(f'WARNING: {msg}')
-					mismatches += 1
-		if hash_thread.is_alive():
-			msg = 'Führe die Hash-Wert-Berechnung fort'
-			logging.info(msg)
-			echo(msg)
-			index = 0
-			while hash_thread.is_alive():
-				echo(f'{"|/-\\"[index]}  ', end='\r')
-				index += 1
-				if index > 3:
-					index = 0
-				sleep(.25)
-			echo('MD5-Hashes-Berechnung ist abgeschlossen')
-		hash_thread.join()
-		tsv = 'Pfad\tMD5-Hash'
-		for path, md5 in hash_thread.get_hashes():
-			tsv += f'\n{path}\t{md5}'
-		log_tsv_path = log_path / f'{strftime('%y%m%d-%H%M')}-{self.TSV_NAME}'
-		try:
-			log_tsv_path.write_text(tsv, encoding='utf-8')
-		except Exception as ex:
-			msg = f'Konnte Log-Datei {log_tsv_path} nicht erzeugen:\n{ex}'
-			logging.error(msg)
-			echo(f'ERROR: {msg}')
-			raise OSError(ex)
-		if errors:
-			msg = f'Die Grö0e von {errors} Datei(en) konnte nicht ermittelt werden'
-			logging.error(msg)
-			echo(f'ERROR: {msg}')
-			if not mismatches:
-				raise OSError(msg)
-		if mismatches:
-			msg = f'Bei {mismatches} Datei(en) stimmt die Größe der Zieldatei nicht mit der Ausgangsdatei überein'
-			logging.error(msg)
-			echo(f'ERROR: {msg}')
-			raise RuntimeError(msg)
-		dst_tsv_path = dst_path / self.TSV_NAME
-		try:
-			dst_tsv_path.write_text(tsv, encoding='utf-8')
-		except Exception as ex:
-			msg = f'Konnte {dst_tsv_path} nicht erzeugen:\n{ex}'
-			logging.error(msg)
-			echo(f'ERROR: {msg}')
-			raise OSError(ex)
-		end_time = perf_counter()
-		delta = end_time - start_time
-		msg = f'Fertig. Das Kopieren dauerte {timedelta(seconds=delta)} (Stunden, Minuten, Sekunden).'
-		logging.info(msg)
-		echo(msg)
-		logging.shutdown()
+	@staticmethod
+	def blacklisted_paths(root_path):
+		'''Check paths by blacklists'''
+		for path in root_path.rglob('*'):
+			if path.is_dir() and path.name in Copy.BLACKLIST_PATHS and Copy.matches_all(path, Copy.BLACKLIST_PATHS[path.name]):
+				yield path, f'Das Verzeichnis {path} könnte gegen Pfad-/Dateikonventionen verstoßen!'
+		yield None, None
 
-	def _bytes(self, size, format_k='{iec} / {si}', format_b='{b} byte(s)'):
+	@staticmethod
+	def blacklisted_files(root_path):
+		for path in root_path.glob('*'):
+			if path.is_file() and path.name in Copy.BLACKLIST_FILES:
+				yield path, f'Eine Datei {path} darf sich nicht in {root_path} befinden!'
+		yield None, None
+
+	@staticmethod
+	def _bytes(size, format_k='{iec} / {si}', format_b='{b} byte(s)'):
 		'''Genereate readable size string,
 			format_k: "{iec} / {si} / {b} bytes" gives e.g. 9.54 MiB / 10.0 MB / 10000000 bytes
 			format_b will be returned if size < 5 bytes
@@ -401,19 +209,185 @@ class Copy:
 			return format_b.format(b=size)
 		return format_k.format(iec=iec, si=si, b=size)
 
-	def	_run_robocopy(self, robocopy):
-		'''Run Robocopy.exe and handle output'''
-		for line in robocopy.run():
+	def __init__(self, root_path, echo=print, check_paths=True):
+		'''Generate object to copy and to zip'''
+		self.root_path = root_path.resolve()
+		self.echo = echo
+		if ex := self.bad_destination(self.root_path):
+			raise ValueError(ex)
+		if ex := self.bad_source(self.root_path):
+			raise ValueError(ex)
+		for path, msg in self.blacklisted_files(self.root_path):
+			if not path:
+				break
+			if echo == print:
+				if input(f'\n{msg}\nDatei löschen oder Abbrechen ("löschen" oder beliebige andere Eingabe): ').lower() == 'löschen':
+					try:
+						path.unlink()
+					except Exception as ex:
+						echo(f'Konnte Datei {path} nicht löschen:\n{ex}')
+						raise OSError(ex)
+					msg = 'Die Datei {path} wurde auf Wunsch des Anwenders gelöscht'
+					logging.info(msg)
+					echo(msg)
+				else:
+					return
+			else:
+				raise ValueError(msg)
+		if check_paths:
+			for path, msg in self.blacklisted_paths(self.root_path):
+				if not path:
+					break
+				if echo == print:
+					answer = input(f'\n{msg}\nVerzeichnis löschen, trotzdem Kopieren oder Abbrechen ("löschen", "kopieren" oder beliebige andere Eingabe): ').lower()
+					if answer == 'löschen':
+						try:
+							rmtree(path)
+						except Exception as ex:
+							echo(f'Konnte Verzeichnis {path} nicht löschen:\n{ex}')
+							raise OSError(ex)
+						msg = 'Das Verzeichnis {path} wurde auf Wunsch des Anwenders gelöscht'
+						logging.info(msg)
+						echo(msg)
+					elif answer == 'kopieren':
+						continue
+					else:
+						return
+				else:
+					raise ValueError(msg)
+		self.dst_path = self.DST_PATH / self.root_path.name
+		try:
+			self.dst_path.mkdir(exist_ok=True)
+		except Exception as ex:
+			echo(f'Kann das Zielverzeichnis {dst_path} nicht erstellen:\n{ex}')
+			raise OSError(ex)
+		log_path = self.LOG_PATH / self.root_path.name
+		try:
+			log_path.mkdir(exist_ok=True)
+		except Exception as ex:
+			echo(f'Kann das Log-Verzeichnis {log_path} nicht erstellen:\n{ex}')
+			raise OSError(ex)
+		start_time = perf_counter()
+		try:
+			logging.basicConfig(	# start logging
+				level = self.LOGLEVEL,
+				filename = log_path / f'{strftime('%y%m%d-%H%M')}-{self.LOG_NAME}',
+				format = '%(asctime)s %(levelname)s: %(message)s',
+				datefmt = '%Y-%m-%d %H:%M:%S'
+			)
+		except Exception as ex:
+			echo(f'Kann das Loggen nicht starten:\n{ex}')
+			raise RuntimeError(ex)
+		msg = f'Lese Verzeichnisstruktur von {self.root_path}'
+		logging.info(msg)
+		echo(msg)
+		self.src_file_paths = list()
+		self.src_file_sizes = list()
+		self.total_bytes = 0
+		try:
+			for path in self.root_path.rglob('*'):	# analyze root structure
+				if path.is_file():
+					size = path.stat().st_size
+					self.src_file_paths.append(path)
+					self.src_file_sizes.append(size)
+					self.total_bytes += size
+		except Exception as ex:
+			logging.error(ex)
+			raise RuntimeError(ex)
+		msg = f'Starte das Kopieren von {self.root_path} nach {self.dst_path}, {self._bytes(self.total_bytes)}'
+		logging.info(msg)
+		echo(msg)
+		try:
+			hash_thread = HashThread(self.src_file_paths)
+			echo(f'Starte Berechnung von {len(self.src_file_paths)} MD5-Hashes')
+			hash_thread.start()
+		except Exception as ex:
+			msg = f'Konnte Thread, der Hash-Werte bilden soll, nicht starten:\n{ex}'
+			logging.error(msg)
+			echo(f'FEHLER: {msg}')
+		proc = RoboCopy(self.root_path, self.dst_path)
+		for line in proc.run():
 			if line.endswith('%'):
 				self.echo(line, end='\r')
 			else:
 				self.echo(line)
-		returncode = robocopy.wait()
+		returncode = proc.wait()
 		if returncode > 3:
-			msg = f'Robocopy.exe hatte ein Problem beim kopieren von Dateien aus {src_path} nach {dst_path}, Rückgabewert: {returncode}'
+			msg = f'Robocopy.exe hatte ein Problem beim kopieren von Dateien aus {self.root_path} nach {self.dst_path}, Rückgabewert: {returncode}'
 			logging.error(msg)
-			self.echo(f'ERROR: {msg}')
 			raise ChildProcessError(ex)
+		msg = 'Robocopy.exe ist fertig, starte Überprüfung anhand Dateigröße'
+		logging.info(msg)
+		echo(msg)
+		errors = 0
+		mismatches = 0
+		total = len(self.src_file_paths)
+		for cnt, (src_path, src_size) in enumerate(zip(self.src_file_paths, self.src_file_sizes), start=1):
+			echo(f'{int(100*cnt/total)}%', end='\r')
+			dst_path = self.dst_path.joinpath(src_path.relative_to(self.root_path))
+			try:
+				dst_size = dst_path.stat().st_size
+			except Exception as ex:
+				msg = f'Dateigröße von {dst_path} konnte nicht ermittelt werden:\n{ex}'
+				logging.warning(msg)
+				echo(f'WARNING: {msg}')
+				errors += 1
+			else:
+				if dst_size != src_size:
+					msg = f'Dateigrößenabweichung: {src_path} => {src_size}, {dst_path} => {dst_size}'
+					logging.warning(msg)
+					echo(f'WARNING: {msg}')
+					mismatches += 1
+		msg = 'Überprüfung anhand Dateigröße ist abgeschlossen'
+		logging.info(msg)
+		echo(msg)
+		if hash_thread.is_alive():
+			msg = 'Führe die Hash-Wert-Berechnung fort'
+			logging.info(msg)
+			echo(msg)
+			index = 0
+			while hash_thread.is_alive():
+				echo(f'{"|/-\\"[index]}  ', end='\r')
+				index += 1
+				if index > 3:
+					index = 0
+				sleep(.25)
+			echo('MD5-Hashes-Berechnung ist abgeschlossen')
+		hash_thread.join()
+		tsv = 'Pfad\tMD5-Hash'
+		for path, md5 in hash_thread.get_hashes():
+			tsv += f'\n{path.relative_to(self.root_path.parent)}\t{md5}'
+		log_tsv_path = log_path / f'{strftime('%y%m%d-%H%M')}-{self.TSV_NAME}'
+		try:
+			log_tsv_path.write_text(tsv, encoding='utf-8')
+		except Exception as ex:
+			msg = f'Konnte Log-Datei {log_tsv_path} nicht erzeugen:\n{ex}'
+			logging.error(msg)
+			raise OSError(ex)
+		if errors:
+			msg = f'Die Größe von {errors} Datei(en) konnte nicht ermittelt werden'
+			logging.error(msg)
+			if not mismatches:
+				raise OSError(msg)
+			echo(f'WARNING: {msg}')
+		if mismatches:
+			msg = f'Bei {mismatches} Datei(en) stimmt die Größe der Zieldatei nicht mit der Ausgangsdatei überein'
+			logging.error(msg)
+			raise RuntimeError(msg)
+		dst_tsv_path = self.dst_path / self.TSV_NAME
+		try:
+			dst_tsv_path.write_text(tsv, encoding='utf-8')
+		except Exception as ex:
+			msg = f'Konnte {dst_tsv_path} nicht erzeugen:\n{ex}'
+			logging.error(msg)
+			echo(msg)
+			raise OSError(ex)
+		end_time = perf_counter()
+		delta = end_time - start_time
+		msg = f'Fertig - das Kopieren dauerte {timedelta(seconds=delta)} (Stunden, Minuten, Sekunden)'
+		logging.info(msg)
+		echo(msg)
+		logging.shutdown()
 
 class Worker(Thread):
 	'''Thread that does the work while Tk is running the GUI'''
@@ -428,8 +402,9 @@ class Worker(Thread):
 		'''Run thread'''
 		for source_path in self.gui.source_paths:
 			try:
-				copy = Copy(source_path, echo=self.gui.echo)
-			except:
+				copy = Copy(source_path, echo=self.gui.echo, check_paths=self.gui.check_paths)
+			except Exception as ex:
+				self.gui.echo(f'FEHLER: {ex}')
 				self.errors = True
 		self.gui.finished(self.errors)
 
@@ -516,11 +491,8 @@ class Gui(Tk):
 					)
 				self.destroy()
 		else:
-			error = Copy.bad_destination()
-			if error:
-				showerror(title='Fehler', message=error)
-				self.destroy()
 			self._init_warning()
+			self.check_paths = True
 			self._add_dir(dir_path)
 
 	def _add_dir(self, directory):
@@ -535,6 +507,38 @@ class Gui(Tk):
 		if error:
 			showerror(title='Fehler', message=error)
 			return
+		for path, msg in Copy.blacklisted_files(dir_path):
+			if not path:
+				break
+			if askyesno(
+				title = f'Datei löschen?',
+				message = f'{msg}\n\nDatei löschen oder Abbrechen?'
+			):
+				try:
+					path.unlink()
+				except Exception as ex:
+					showerror(title='Fehler', message=f'Konnte Datei {path} nicht löschen:\n{ex}')
+					return
+		for path, msg in Copy.blacklisted_paths(dir_path):
+			if not path:
+				break
+			if askyesno(
+				title = f'Verzeichnis löschen?',
+				message = f'{msg}\n\nVerzeichnis löschen?'
+			):
+				try:
+					rmtree(path)
+				except Exception as ex:
+					showerror(title='Fehler', message=f'Konnte Verzeichnis {path} nicht löschen:\n{ex}')
+					return
+			else:
+				if askyesno(
+					title = f'Fortfahren?',
+					message = f'{msg}\n\nTrotzdem fortfahren und Verzeichnis hinzufügen?'
+				):
+					self.check_paths = False
+				else:
+					return
 		self.source_text.insert('end', f'{dir_path}\n')
 
 	def _select_dir(self):
@@ -657,3 +661,4 @@ IRnQ1Ek/63j1E9LuxiHIAJ7XiJYLPWCfojbkQx6N2jlfEqNJudij2EsQAGjldO8ghxR+CgYA9zHa
 RpHICgDYTXGxXYMyaMVotS18/uELXES3TCulURn8iChuWseJa1+g4H0YFEq7os9OaPBS8gEY2pVs
 OpO9dT3HqebSmYPLji8QQEyVYIoEY4qE6o5+cgD8xYF9mcXPV12fPIIrXx13KAAAAAAASUVORK5C
 YII=''').mainloop()	# give tk the icon as base64 and open main window
+
